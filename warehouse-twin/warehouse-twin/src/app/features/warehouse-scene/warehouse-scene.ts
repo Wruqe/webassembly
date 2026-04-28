@@ -8,6 +8,31 @@ type ConveyerData = {
   start: THREE.Vector3;
   end: THREE.Vector3;
 }
+type PackageRoute = {
+  colorName: string;
+  color: number;
+  pairIndex: number;
+  side: 'left' | 'right';
+  mainTargetX: number;
+  mainZ: number;
+  feederStartZ: number;
+  connectorEntryZ: number;
+  arcCenterX: number;
+  arcCenterZ: number;
+  arcRadius: number;
+  laneX: number;
+  laneStartZ: number;
+  laneEndZ: number;
+}
+type FeedPackage = {
+  mesh: THREE.Mesh;
+  route: PackageRoute;
+  phase: 'waiting' | 'main' | 'feeder' | 'arc' | 'lane';
+  arcAngle: number;
+  startX: number;
+  endX: number;
+  speed: number;
+}
 @Component({
   selector: 'app-warehouse-scene',
   imports: [],
@@ -35,9 +60,44 @@ export class WarehouseScene {
   private gridSize = 20;
   private cellSize = 1;
   private conveyorStripes: { mesh: THREE.Mesh, axis: 'x' | 'z', speed: number, start: number, end: number }[] = []
+  private arcConveyorStripes: {
+    mesh: THREE.Mesh;
+    centerX: number;
+    centerZ: number;
+    y: number;
+    radius: number;
+    angle: number;
+    angleStart: number;
+    angleEnd: number;
+    speed: number;
+  }[] = []
   private conveyers: ConveyerData[] = []
   private masterConveyer?: ConveyerData;
   private bucketIndex = 0;
+  private readonly bucketConfigs = [
+    { name: 'Amber', color: 0xc7954b },
+    { name: 'Blue', color: 0x4f8cc9 },
+    { name: 'Green', color: 0x6fbf73 },
+    { name: 'Red', color: 0xd96c63 },
+    { name: 'Purple', color: 0xb48ad8 },
+    { name: 'Cyan', color: 0x38bdf8 },
+  ];
+  private feedPackages: FeedPackage[] = [];
+  private packageRoutes: PackageRoute[] = [];
+  private packageRouteIndex = 0;
+  private packageSpawnTimer = 90;
+  private readonly packageSpawnInterval = 90;
+  private feederPushers: {
+    mesh: THREE.Mesh;
+    actuator: THREE.Mesh;
+    actuatorBody: THREE.Mesh;
+    support: THREE.Mesh;
+    pairIndex: number;
+    homeZ: number;
+    extension: number;
+    targetExtension: number;
+  }[] = [];
+  private connectorSwitches: { mesh: THREE.Mesh; pairIndex: number; rotation: number }[] = [];
   private initCamera(): void {
     this.camera = new THREE.PerspectiveCamera(75, this.width / this.height, 0.1, 1000);
     this.camera.position.set(5, 5, 5);
@@ -150,8 +210,9 @@ export class WarehouseScene {
       metalness: 0.6,
       roughness: 0.24,
     });
+    const bucketConfig = this.bucketConfigs[this.bucketIndex % this.bucketConfigs.length];
     const accentMaterial = new THREE.MeshStandardMaterial({
-      color: 0x38bdf8,
+      color: bucketConfig.color,
       emissive: 0x0b2f40,
       metalness: 0.2,
       roughness: 0.28,
@@ -222,7 +283,7 @@ export class WarehouseScene {
     bin.add(bottom, back, leftwall, right, front, rim, accent, feet);
     this.scene.add(bin);
 
-    const label = this.createBucketLabel(`Bucket ${this.bucketIndex + 1}`);
+    const label = this.createBucketLabel(bucketConfig.name);
     label.position.set(x, height + 0.65, z);
     this.scene.add(label);
     this.bucketIndex += 1;
@@ -240,6 +301,10 @@ export class WarehouseScene {
     requestAnimationFrame(() => this.animate());
     this.controls.update();
     this.animateCoveyer();
+    this.animateArcConveyorStripes();
+    this.animateFeedPackage();
+    this.animateFeederPushers();
+    this.animateConnectorSwitches();
     this.renderer.render(this.scene, this.camera);
   }
   private initAxesHelper(): void {
@@ -378,23 +443,35 @@ export class WarehouseScene {
     this.createConveyorSupports(center, axis, width);
     this.conveyers.push({ mesh: conveyer, axis, center, start, end })
 
-    const stripesGeometry = new THREE.BoxGeometry(.12, 0.02, depth);
-    const stripeMaterial = new THREE.MeshStandardMaterial({ color: 0x555555 });
+    this.createConveyorStripes(center, axis, width);
+  }
 
-    for (let offset = -width / 2; offset <= width / 2; offset += 1) {
+  private createConveyorStripes(
+    center: THREE.Vector3,
+    axis: 'x' | 'z',
+    length: number,
+    spacing = 1,
+    positiveEndTrim = 0
+  ): void {
+    const stripesGeometry = new THREE.BoxGeometry(.12, 0.02, this.conveyorDepth);
+    const stripeMaterial = new THREE.MeshStandardMaterial({ color: 0x555555 });
+    const startOffset = -length / 2;
+    const endOffset = length / 2 - positiveEndTrim;
+
+    for (let offset = startOffset; offset <= endOffset; offset += spacing) {
       const stripe = new THREE.Mesh(stripesGeometry, stripeMaterial);
       if (axis === 'x') {
-        stripe.position.set(x + offset, height + 0.02 + binHeight, z);
+        stripe.position.set(center.x + offset, center.y + this.conveyorHeight / 2 + 0.02, center.z);
       } else {
         stripe.rotation.y = Math.PI / 2;
-        stripe.position.set(x, height + 0.02 + binHeight, z + offset);
+        stripe.position.set(center.x, center.y + this.conveyorHeight / 2 + 0.02, center.z + offset);
       }
       this.scene.add(stripe);
       this.conveyorStripes.push({
         mesh: stripe,
         axis: axis,
-        start: axis === 'x' ? x - width / 2 : z - width / 2,
-        end: axis === 'x' ? x + width / 2 : z + width / 2,
+        start: axis === 'x' ? center.x + startOffset : center.z + startOffset,
+        end: axis === 'x' ? center.x + endOffset : center.z + endOffset,
         speed: 0.01,
       });
     }
@@ -405,14 +482,35 @@ export class WarehouseScene {
       if (stripe.axis === 'x') {
         stripe.mesh.position.x += stripe.speed;
         if (stripe.mesh.position.x > stripe.end) {
-          stripe.mesh.position.x = stripe.start;
+          stripe.mesh.position.x = stripe.start + (stripe.mesh.position.x - stripe.end);
         }
       } else if (stripe.axis === 'z') {
         stripe.mesh.position.z += stripe.speed;
         if (stripe.mesh.position.z > stripe.end) {
-          stripe.mesh.position.z = stripe.start;
+          stripe.mesh.position.z = stripe.start + (stripe.mesh.position.z - stripe.end);
         }
       }
+    }
+  }
+
+  private animateArcConveyorStripes(): void {
+    for (const stripe of this.arcConveyorStripes) {
+      stripe.angle += stripe.speed;
+
+      if (stripe.speed >= 0 && stripe.angle > stripe.angleEnd) {
+        stripe.angle = stripe.angleStart + (stripe.angle - stripe.angleEnd);
+      } else if (stripe.speed < 0 && stripe.angle < stripe.angleStart) {
+        stripe.angle = stripe.angleEnd - (stripe.angleStart - stripe.angle);
+      }
+
+      const tangentAngle = stripe.angle + Math.PI / 2;
+
+      stripe.mesh.position.set(
+        stripe.centerX + Math.cos(stripe.angle) * stripe.radius,
+        stripe.y,
+        stripe.centerZ + Math.sin(stripe.angle) * stripe.radius
+      );
+      stripe.mesh.rotation.y = -tangentAngle;
     }
   }
 
@@ -501,6 +599,380 @@ export class WarehouseScene {
       end: new THREE.Vector3(endX, y, z),
     };
   }
+
+  private createFeedConveyor(
+    center: THREE.Vector3,
+    axis: 'x' | 'z',
+    length: number,
+    stripePositiveEndTrim = 0,
+    stripeSpacing = 1
+  ): void {
+    const geometry = new THREE.BoxGeometry(length, this.conveyorHeight, this.conveyorDepth);
+    const material = new THREE.MeshStandardMaterial({ color: 0x1f2327 });
+    const conveyor = new THREE.Mesh(geometry, material);
+
+    if (axis === 'z') {
+      conveyor.rotation.y = Math.PI / 2;
+    }
+
+    conveyor.position.copy(center);
+    this.scene.add(conveyor);
+    this.createGuardRails(center, axis, length, this.conveyorDepth, this.conveyorHeight);
+    this.createConveyorSupports(center, axis, length);
+    this.createConveyorStripes(
+      center,
+      axis,
+      length,
+      stripeSpacing,
+      stripePositiveEndTrim
+    );
+  }
+
+  private createFeedPackages(
+    startX: number,
+    endX: number,
+    y: number,
+    z: number,
+    routes: PackageRoute[]
+  ): void {
+    this.packageRoutes = routes;
+    const poolSize = routes.length * 2;
+
+    for (let index = 0; index < poolSize; index += 1) {
+      const route = routes[index % routes.length];
+      const packageGeometry = new THREE.BoxGeometry(0.7, 0.45, 0.55);
+      const packageMaterial = new THREE.MeshStandardMaterial({
+        color: route.color,
+        roughness: 0.58,
+        metalness: 0.02,
+      });
+      const packageMesh = new THREE.Mesh(packageGeometry, packageMaterial);
+
+      packageMesh.visible = false;
+      packageMesh.position.set(startX, y + this.conveyorHeight / 2 + 0.25, z);
+      this.scene.add(packageMesh);
+
+      this.feedPackages.push({
+        mesh: packageMesh,
+        route,
+        phase: 'waiting',
+        arcAngle: -Math.PI / 2,
+        startX,
+        endX,
+        speed: 0.018,
+      });
+    }
+  }
+
+  private spawnFeedPackage(): void {
+    if (this.packageRoutes.length === 0) return;
+
+    const nextPackage = this.feedPackages.find((feedPackage) => feedPackage.phase === 'waiting');
+    if (!nextPackage) return;
+
+    const route = this.packageRoutes[this.packageRouteIndex % this.packageRoutes.length];
+    const material = nextPackage.mesh.material;
+
+    if (material instanceof THREE.MeshStandardMaterial) {
+      material.color.setHex(route.color);
+    }
+
+    nextPackage.route = route;
+    nextPackage.phase = 'main';
+    nextPackage.arcAngle = -Math.PI / 2;
+    nextPackage.mesh.visible = true;
+    nextPackage.mesh.position.set(nextPackage.startX, nextPackage.mesh.position.y, route.mainZ);
+    this.packageRouteIndex += 1;
+  }
+
+  private createFeederPusher(
+    pairIndex: number,
+    x: number,
+    y: number,
+    z: number
+  ): void {
+    const pusherHomeZ = z + 0.42;
+    const actuatorY = y + this.conveyorHeight / 2 + 0.2;
+    const pusher = new THREE.Mesh(
+      new THREE.BoxGeometry(0.9, 0.16, 0.16),
+      new THREE.MeshStandardMaterial({
+        color: 0xe9eef2,
+        metalness: 0.62,
+        roughness: 0.22,
+      })
+    );
+
+    pusher.position.set(x, actuatorY, pusherHomeZ);
+    this.scene.add(pusher);
+
+    const actuator = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.045, 0.045, 1, 16),
+      new THREE.MeshStandardMaterial({
+        color: 0xb8c0c7,
+        metalness: 0.88,
+        roughness: 0.18,
+      })
+    );
+
+    actuator.rotation.x = Math.PI / 2;
+    actuator.position.set(x, actuatorY, pusherHomeZ - 0.32);
+    this.scene.add(actuator);
+
+    const actuatorBody = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.11, 0.11, 0.58, 20),
+      new THREE.MeshStandardMaterial({
+        color: 0x303841,
+        metalness: 0.72,
+        roughness: 0.26,
+      })
+    );
+    actuatorBody.rotation.x = Math.PI / 2;
+    actuatorBody.position.set(x, actuatorY, pusherHomeZ - 0.62);
+    this.scene.add(actuatorBody);
+
+    const mount = new THREE.Mesh(
+      new THREE.BoxGeometry(0.38, 0.3, 0.14),
+      new THREE.MeshStandardMaterial({
+        color: 0x252b31,
+        metalness: 0.58,
+        roughness: 0.32,
+      })
+    );
+    mount.position.set(x, actuatorY, pusherHomeZ - 0.9);
+    this.scene.add(mount);
+
+    const supportHeight = Math.max(actuatorY - 0.12, 0.2);
+    const support = new THREE.Mesh(
+      new THREE.BoxGeometry(0.14, supportHeight, 0.14),
+      new THREE.MeshStandardMaterial({
+        color: 0x252b31,
+        metalness: 0.58,
+        roughness: 0.32,
+      })
+    );
+    support.position.set(x, supportHeight / 2, pusherHomeZ - 0.62);
+    this.scene.add(support);
+
+    this.feederPushers.push({
+      mesh: pusher,
+      actuator,
+      actuatorBody,
+      support,
+      pairIndex,
+      homeZ: pusherHomeZ,
+      extension: 0,
+      targetExtension: 0,
+    });
+  }
+
+  private animateFeederPushers(): void {
+    for (const pusher of this.feederPushers) {
+      const active = this.feedPackages.some((feedPackage) => {
+        if (feedPackage.route.pairIndex !== pusher.pairIndex) return false;
+
+        const directlyAligned = feedPackage.phase === 'main' &&
+          Math.abs(feedPackage.mesh.position.x - feedPackage.route.mainTargetX) < 0.12;
+        const justEnteringFeeder = feedPackage.phase === 'feeder' &&
+          feedPackage.mesh.position.z < feedPackage.route.feederStartZ + 0.2;
+
+        return directlyAligned || justEnteringFeeder;
+      });
+
+      pusher.targetExtension = active ? 0.48 : 0;
+      const response = active ? 0.38 : 0.96;
+      pusher.extension += (pusher.targetExtension - pusher.extension) * response;
+
+      if (!active && pusher.extension < 0.01) {
+        pusher.extension = 0;
+      }
+
+      pusher.mesh.position.z = pusher.homeZ + pusher.extension;
+
+      const actuatorLength = 0.38 + pusher.extension;
+      pusher.actuator.scale.y = actuatorLength;
+      pusher.actuator.position.z = pusher.homeZ - 0.2 + pusher.extension / 2;
+    }
+  }
+
+private feederPusherCollidesWithPackage(feedPackage: FeedPackage): boolean {
+  const pusher = this.feederPushers.find(
+    (item) => item.pairIndex === feedPackage.route.pairIndex
+  );
+
+  if (!pusher) return false;
+
+  const pusherHalfX = 0.45;
+  const pusherHalfZ = 0.08;
+
+  const packageHalfX = 0.35;
+  const packageHalfZ = 0.275;
+
+  const gap = 0.02;
+
+  const xDistance = Math.abs(
+    pusher.mesh.position.x - feedPackage.mesh.position.x
+  );
+
+  const xOverlap = xDistance <= pusherHalfX + packageHalfX;
+
+  const pusherFrontZ = pusher.mesh.position.z + pusherHalfZ;
+  const packageBackZ = feedPackage.mesh.position.z - packageHalfZ;
+
+  const touchingOrPast = pusherFrontZ >= packageBackZ - gap;
+
+  return xOverlap && touchingOrPast;
+}
+private resolveFeederPusherCollision(feedPackage: FeedPackage): void {
+  const pusher = this.feederPushers.find(
+    (item) => item.pairIndex === feedPackage.route.pairIndex
+  );
+
+  if (!pusher) return;
+
+  const pusherBox = new THREE.Box3().setFromObject(pusher.mesh);
+  const packageBox = new THREE.Box3().setFromObject(feedPackage.mesh);
+
+  const pusherFrontZ = pusherBox.max.z;
+  const packageHalfDepth =
+    (packageBox.max.z - packageBox.min.z) / 2;
+
+  const gap = 0.02;
+
+  feedPackage.mesh.position.z =
+    pusherFrontZ + packageHalfDepth + gap;
+
+  feedPackage.phase = 'feeder';
+}  private animateFeedPackage(): void {
+    this.packageSpawnTimer += 1;
+
+    if (this.packageSpawnTimer >= this.packageSpawnInterval) {
+      this.spawnFeedPackage();
+      this.packageSpawnTimer = 0;
+    }
+
+    for (const feedPackage of this.feedPackages) {
+      if (feedPackage.phase === 'waiting') continue;
+
+      if (feedPackage.phase === 'main') {
+        feedPackage.mesh.position.x += feedPackage.speed;
+
+        if (feedPackage.mesh.position.x >= feedPackage.route.mainTargetX) {
+          feedPackage.mesh.position.x = feedPackage.route.mainTargetX;
+        }
+
+        if (this.feederPusherCollidesWithPackage(feedPackage)) {
+        this.resolveFeederPusherCollision(feedPackage) }
+      } else if (feedPackage.phase === 'feeder') {
+        feedPackage.mesh.position.z += feedPackage.speed;
+
+        if (feedPackage.mesh.position.z >= feedPackage.route.connectorEntryZ) {
+          feedPackage.mesh.position.z = feedPackage.route.connectorEntryZ;
+
+          if (this.connectorSwitchReadyForPackage(feedPackage)) {
+            feedPackage.arcAngle = -Math.PI / 2;
+            feedPackage.phase = 'arc';
+          }
+        }
+      } else if (feedPackage.phase === 'arc') {
+        const targetAngle = feedPackage.route.side === 'left' ? -Math.PI : 0;
+        const angleSpeed = feedPackage.route.side === 'left' ? -0.012 : 0.012;
+
+        feedPackage.arcAngle += angleSpeed;
+
+        if (
+          (feedPackage.route.side === 'left' && feedPackage.arcAngle <= targetAngle) ||
+          (feedPackage.route.side === 'right' && feedPackage.arcAngle >= targetAngle)
+        ) {
+          feedPackage.arcAngle = targetAngle;
+          feedPackage.phase = 'lane';
+        }
+
+        feedPackage.mesh.position.x = feedPackage.route.arcCenterX + Math.cos(feedPackage.arcAngle) * feedPackage.route.arcRadius;
+        feedPackage.mesh.position.z = feedPackage.route.arcCenterZ + Math.sin(feedPackage.arcAngle) * feedPackage.route.arcRadius;
+      } else {
+        feedPackage.mesh.position.z += feedPackage.speed;
+
+        if (feedPackage.mesh.position.z >= feedPackage.route.laneEndZ) {
+          feedPackage.mesh.visible = false;
+          feedPackage.mesh.position.set(feedPackage.startX, feedPackage.mesh.position.y, feedPackage.route.mainZ);
+          feedPackage.phase = 'waiting';
+          feedPackage.arcAngle = -Math.PI / 2;
+        }
+      }
+    }
+  }
+
+  private createMainFeedSystem(): void {
+    const sorted = [...this.conveyers].sort(
+      (a, b) => a.center.x - b.center.x
+    );
+
+    if (sorted.length < 2) return;
+
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    const mainFeedZ = Math.min(...sorted.map((conveyor) => conveyor.start.z)) - 5;
+    const mainStartX = first.center.x - this.conveyorDepth;
+    const mainEndX = last.center.x + this.conveyorDepth;
+    const mainLength = Math.abs(mainEndX - mainStartX);
+    const mainCenter = new THREE.Vector3(
+      (mainStartX + mainEndX) / 2,
+      first.center.y,
+      mainFeedZ
+    );
+    const routes: PackageRoute[] = [];
+
+    this.createFeedConveyor(mainCenter, 'x', mainLength);
+
+    for (let index = 0; index < sorted.length - 1; index += 2) {
+      const left = sorted[index];
+      const right = sorted[index + 1];
+      const pairIndex = index / 2;
+      const pairCenterX = (left.center.x + right.center.x) / 2;
+      const radius = Math.abs(right.center.x - left.center.x) / 2;
+      const connectorEntryZ = left.start.z - radius - 0.55;
+      const feederStartZ = mainFeedZ + this.conveyorDepth / 2 - 0.25;
+      const feederLength = Math.abs(connectorEntryZ - feederStartZ);
+      const feederCenter = new THREE.Vector3(
+        pairCenterX,
+        first.center.y,
+        (feederStartZ + connectorEntryZ) / 2
+      );
+
+      this.createFeedConveyor(feederCenter, 'z', feederLength, 0.5, 2.4);
+      this.createFeederPusher(
+        pairIndex,
+        pairCenterX,
+        first.center.y,
+        mainFeedZ - this.conveyorDepth / 2 - 0.16
+      );
+
+      for (const side of ['left', 'right'] as const) {
+        const bucketConfig = this.bucketConfigs[pairIndex * 2 + (side === 'left' ? 0 : 1)];
+        const lane = side === 'left' ? left : right;
+
+        routes.push({
+          colorName: bucketConfig.name,
+          color: bucketConfig.color,
+          pairIndex,
+          side,
+          mainTargetX: pairCenterX,
+          mainZ: mainFeedZ,
+          feederStartZ,
+          connectorEntryZ,
+          arcCenterX: pairCenterX,
+          arcCenterZ: left.start.z,
+          arcRadius: radius,
+          laneX: lane.center.x,
+          laneStartZ: lane.start.z,
+          laneEndZ: lane.end.z,
+        });
+      }
+    }
+
+    this.createFeedPackages(mainStartX, mainEndX, first.center.y, mainFeedZ, routes);
+  }
+
   private addSwitches(): void {
     const sorted = [...this.conveyers].sort(
       (a, b) => a.center.x - b.center.x
@@ -513,20 +985,95 @@ export class WarehouseScene {
       const arcCenterX = (c1.center.x + c2.center.x) / 2;
       const arcCenterZ = c1.start.z;
       const switchX = arcCenterX;
-      const switchZ = arcCenterZ - radius;
+      const switchZ = arcCenterZ - radius + 0.28;
       const switchY = c1.center.y + this.conveyorHeight / 2 + 0.08;
-      const bladeGeometry = new THREE.BoxGeometry(1.6, 0.12, 0.28);
+      const bladeGeometry = new THREE.BoxGeometry(1.18, 0.09, 0.18);
       const bladeMaterial = new THREE.MeshStandardMaterial({
         color: 0xe9eef2,
         metalness: 0.55,
         roughness: 0.24,
       });
       const blade = new THREE.Mesh(bladeGeometry, bladeMaterial);
+      const bodyMaterial = new THREE.MeshStandardMaterial({
+        color: 0x303841,
+        metalness: 0.7,
+        roughness: 0.28,
+      });
+      const housing = new THREE.Mesh(
+        new THREE.BoxGeometry(0.48, 0.18, 0.34),
+        bodyMaterial
+      );
+      housing.position.set(switchX, switchY - 0.02, switchZ + 0.5);
+      this.scene.add(housing);
+
+      const pivot = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.05, 0.05, 0.6, 16),
+        new THREE.MeshStandardMaterial({
+          color: 0xaeb6bf,
+          metalness: 0.9,
+          roughness: 0.18,
+        })
+      );
+      pivot.rotation.x = Math.PI / 2;
+      pivot.position.set(switchX, switchY, switchZ + 0.38);
+      this.scene.add(pivot);
+
+      const supportHeight = Math.max(switchY - 0.12, 0.24);
+      const support = new THREE.Mesh(
+        new THREE.BoxGeometry(0.14, supportHeight, 0.14),
+        bodyMaterial
+      );
+      support.position.set(switchX, supportHeight / 2, switchZ + 0.68);
+      this.scene.add(support);
 
       blade.position.set(switchX, switchY, switchZ);
       blade.rotation.y = 0;
-      this.scene.add(blade)
+      this.scene.add(blade);
+      this.connectorSwitches.push({
+        mesh: blade,
+        pairIndex: i / 2,
+        rotation: 0,
+      });
     }
+  }
+
+  private animateConnectorSwitches(): void {
+    for (const connectorSwitch of this.connectorSwitches) {
+      const activePackage = this.feedPackages.find((feedPackage) => {
+        if (feedPackage.route.pairIndex !== connectorSwitch.pairIndex) return false;
+
+        const switchZ = feedPackage.route.arcCenterZ - feedPackage.route.arcRadius;
+        const closeToArc = feedPackage.phase === 'feeder' &&
+          feedPackage.mesh.position.z > feedPackage.route.connectorEntryZ - 0.45;
+        const stillClearingSwitch = feedPackage.phase === 'arc' &&
+          feedPackage.mesh.position.z <= switchZ + 0.28;
+
+        return closeToArc || stillClearingSwitch;
+      });
+      const targetRotation = !activePackage
+        ? 0
+        : this.getConnectorSwitchTargetRotation(activePackage.route.side);
+      const response = activePackage ? 0.5 : 0.62;
+
+      connectorSwitch.rotation += (targetRotation - connectorSwitch.rotation) * response;
+      connectorSwitch.mesh.rotation.y = connectorSwitch.rotation;
+    }
+  }
+
+  private connectorSwitchReadyForPackage(feedPackage: FeedPackage): boolean {
+    const connectorSwitch = this.connectorSwitches.find(
+      (item) => item.pairIndex === feedPackage.route.pairIndex
+    );
+
+    if (!connectorSwitch) return true;
+
+    const targetRotation = this.getConnectorSwitchTargetRotation(feedPackage.route.side);
+
+    return Math.abs(connectorSwitch.rotation - targetRotation) < 0.08;
+  }
+
+  private getConnectorSwitchTargetRotation(side: 'left' | 'right'): number {
+    return side === 'left' ? Math.PI / 5 : -Math.PI / 5;
   }
 
   private createConntectorLane(): void {
@@ -559,6 +1106,7 @@ export class WarehouseScene {
         angleEnd,
       0x222222
     );
+    this.createArcStripes(arcCenterX, arcCenterZ, c1.center.y, radius, angleStart, angleEnd);
     this.createArcSupports(arcCenterX, arcCenterZ, c1.center.y, radius, angleStart, angleEnd);
 
     for (const side of [-1, 1]) {
@@ -582,6 +1130,62 @@ export class WarehouseScene {
         );
     }
 
+    }
+  }
+
+  private createArcStripes(
+    centerX: number,
+    centerZ: number,
+    y: number,
+    radius: number,
+    angleStart: number,
+    angleEnd: number
+  ): void {
+    const splitAngle = (angleStart + angleEnd) / 2;
+
+    this.createArcStripeSegment(centerX, centerZ, y, radius, angleStart, splitAngle, -0.0065);
+    this.createArcStripeSegment(centerX, centerZ, y, radius, splitAngle, angleEnd, 0.0065);
+  }
+
+  private createArcStripeSegment(
+    centerX: number,
+    centerZ: number,
+    y: number,
+    radius: number,
+    angleStart: number,
+    angleEnd: number,
+    speed: number
+  ): void {
+    const stripeGeometry = new THREE.BoxGeometry(0.12, 0.02, this.conveyorDepth);
+    const stripeMaterial = new THREE.MeshStandardMaterial({ color: 0x555555 });
+    const arcLength = Math.abs(angleEnd - angleStart) * radius;
+    const stripeCount = Math.max(3, Math.floor(arcLength));
+
+    for (let index = 0; index <= stripeCount; index += 1) {
+      const t = index / stripeCount;
+      const angle = angleStart + (angleEnd - angleStart) * t;
+      const stripe = new THREE.Mesh(stripeGeometry, stripeMaterial);
+      const tangentAngle = angle + Math.PI / 2;
+
+      stripe.position.set(
+        centerX + Math.cos(angle) * radius,
+        y + this.conveyorHeight / 2 + 0.02,
+        centerZ + Math.sin(angle) * radius
+      );
+      stripe.rotation.y = -tangentAngle;
+
+      this.scene.add(stripe);
+      this.arcConveyorStripes.push({
+        mesh: stripe,
+        centerX,
+        centerZ,
+        y: y + this.conveyorHeight / 2 + 0.02,
+        radius,
+        angle,
+        angleStart,
+        angleEnd,
+        speed,
+      });
     }
   }
 
@@ -699,6 +1303,7 @@ export class WarehouseScene {
     this.initFloor();
     this.initGrid();
     this.createAmountBins(-8, 8, 3, true, 'z');
+    this.createMainFeedSystem()
     this.addSwitches()
     this.createConntectorLane()
     this.animate();
