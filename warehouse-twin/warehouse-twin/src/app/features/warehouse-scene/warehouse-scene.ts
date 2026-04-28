@@ -1,10 +1,6 @@
-import { Component, ElementRef, ViewChild, AfterViewInit, viewChild } from '@angular/core';
+import { Component, ElementRef, ViewChild } from '@angular/core';
 import * as THREE from 'three';
-import { thickness } from 'three/src/nodes/core/PropertyNode.js';
-import { lights } from 'three/src/nodes/lighting/LightsNode.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { objectDirection } from 'three/src/nodes/accessors/Object3DNode.js';
-import { mat4 } from 'three/src/nodes/tsl/TSLCore.js';
 type ConveyerData = {
   mesh: THREE.Mesh;
   axis: 'x' | 'z';
@@ -76,7 +72,9 @@ export class WarehouseScene {
   private initFloor(): void {
     const geometry = new THREE.PlaneGeometry(20, 20);
     const material = new THREE.MeshStandardMaterial({
-      color: 0x888888,
+      color: 0x3f474f,
+      metalness: 0.08,
+      roughness: 0.78,
       side: THREE.DoubleSide,
     });
     const floor = new THREE.Mesh(geometry, material);
@@ -105,23 +103,43 @@ export class WarehouseScene {
   }
 
   private createBin(x: number, z: number): THREE.Group {
-    const material = new THREE.MeshStandardMaterial({ color: 0x8b5a2b });
+    const panelMaterial = new THREE.MeshStandardMaterial({
+      color: 0x52616f,
+      metalness: 0.35,
+      roughness: 0.42,
+    });
+    const trimMaterial = new THREE.MeshStandardMaterial({
+      color: 0x9fb3c8,
+      metalness: 0.6,
+      roughness: 0.24,
+    });
+    const accentMaterial = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x0b2f40,
+      metalness: 0.2,
+      roughness: 0.28,
+    });
+    const footMaterial = new THREE.MeshStandardMaterial({
+      color: 0x242a31,
+      metalness: 0.65,
+      roughness: 0.32,
+    });
     const width = 2;
     const height = 1;
     const depth = 2;
     const thickness = 0.1;
 
-    const bottom = new THREE.Mesh(new THREE.BoxGeometry(width, thickness, depth), material);
+    const bottom = new THREE.Mesh(new THREE.BoxGeometry(width, thickness, depth), panelMaterial);
     bottom.position.set(x, thickness / 2, z);
 
-    const back = new THREE.Mesh(new THREE.BoxGeometry(width, height, thickness), material)
+    const back = new THREE.Mesh(new THREE.BoxGeometry(width, height, thickness), panelMaterial)
     back.position.set(x, height / 2, z - depth / 2 + thickness / 2);
-    const leftwall = new THREE.Mesh(new THREE.BoxGeometry(thickness, height, depth), material);
+    const leftwall = new THREE.Mesh(new THREE.BoxGeometry(thickness, height, depth), panelMaterial);
     leftwall.position.set(x - width / 2 + thickness / 2, height / 2, z);
 
     const right = new THREE.Mesh(
       new THREE.BoxGeometry(thickness, height, depth),
-      material
+      panelMaterial
     );
 
     right.position.set(
@@ -131,7 +149,7 @@ export class WarehouseScene {
     );
     const front = new THREE.Mesh(
       new THREE.BoxGeometry(width, height, thickness),
-      material
+      panelMaterial
     );
 
     front.position.set(
@@ -139,8 +157,32 @@ export class WarehouseScene {
       height / 2,
       z + depth / 2 - thickness / 2
     );
+    const rim = new THREE.Group();
+    const frontRim = new THREE.Mesh(new THREE.BoxGeometry(width + 0.12, 0.1, 0.12), trimMaterial);
+    const backRim = new THREE.Mesh(new THREE.BoxGeometry(width + 0.12, 0.1, 0.12), trimMaterial);
+    const leftRim = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, depth + 0.12), trimMaterial);
+    const rightRim = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, depth + 0.12), trimMaterial);
+
+    frontRim.position.set(x, height + 0.05, z + depth / 2);
+    backRim.position.set(x, height + 0.05, z - depth / 2);
+    leftRim.position.set(x - width / 2, height + 0.05, z);
+    rightRim.position.set(x + width / 2, height + 0.05, z);
+    rim.add(frontRim, backRim, leftRim, rightRim);
+
+    const accent = new THREE.Mesh(new THREE.BoxGeometry(width * 0.55, 0.08, 0.04), accentMaterial);
+    accent.position.set(x, height * 0.68, z + depth / 2 + 0.02);
+
+    const feet = new THREE.Group();
+    for (const offsetX of [-0.72, 0.72]) {
+      for (const offsetZ of [-0.72, 0.72]) {
+        const foot = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.16, 0.22), footMaterial);
+        foot.position.set(x + offsetX, 0.08, z + offsetZ);
+        feet.add(foot);
+      }
+    }
+
     const bin = new THREE.Group();
-    bin.add(bottom, back, leftwall, right, front);
+    bin.add(bottom, back, leftwall, right, front, rim, accent, feet);
     this.scene.add(bin);
     return bin;
   }
@@ -200,6 +242,65 @@ export class WarehouseScene {
     this.scene.add(rightRail);
   }
 
+  private createConveyorSupports(
+    center: THREE.Vector3,
+    axis: 'x' | 'z',
+    length: number
+  ): void {
+    const frameMaterial = new THREE.MeshStandardMaterial({
+      color: 0x343b43,
+      metalness: 0.55,
+      roughness: 0.34,
+    });
+    const frameY = center.y - this.conveyorHeight / 2 - 0.08;
+    const legHeight = Math.max(frameY, 0.2);
+    const legY = legHeight / 2;
+    const crossGeometry = axis === 'x'
+      ? new THREE.BoxGeometry(length, 0.12, 0.14)
+      : new THREE.BoxGeometry(0.14, 0.12, length);
+    const leftCross = new THREE.Mesh(crossGeometry, frameMaterial);
+    const rightCross = new THREE.Mesh(crossGeometry, frameMaterial);
+
+    if (axis === 'x') {
+      leftCross.position.set(center.x, frameY, center.z - this.conveyorDepth / 2 + 0.18);
+      rightCross.position.set(center.x, frameY, center.z + this.conveyorDepth / 2 - 0.18);
+    } else {
+      leftCross.position.set(center.x - this.conveyorDepth / 2 + 0.18, frameY, center.z);
+      rightCross.position.set(center.x + this.conveyorDepth / 2 - 0.18, frameY, center.z);
+    }
+
+    this.scene.add(leftCross);
+    this.scene.add(rightCross);
+
+    const legGeometry = new THREE.BoxGeometry(0.12, legHeight, 0.12);
+    const supportCount = Math.max(2, Math.ceil(length / 3));
+
+    for (let i = 0; i < supportCount; i++) {
+      const t = supportCount === 1 ? 0.5 : i / (supportCount - 1);
+      const along = -length / 2 + length * t;
+
+      for (const side of [-1, 1]) {
+        const leg = new THREE.Mesh(legGeometry, frameMaterial);
+
+        if (axis === 'x') {
+          leg.position.set(
+            center.x + along,
+            legY,
+            center.z + side * (this.conveyorDepth / 2 - 0.18)
+          );
+        } else {
+          leg.position.set(
+            center.x + side * (this.conveyorDepth / 2 - 0.18),
+            legY,
+            center.z + along
+          );
+        }
+
+        this.scene.add(leg);
+      }
+    }
+  }
+
   private createConveyor(x: number, z: number, axis: 'x' | 'z', binObj: THREE.Group): void {
     const width = this.conveyorWidth;
     const height = this.conveyorHeight;
@@ -231,6 +332,7 @@ export class WarehouseScene {
     }
     this.scene.add(conveyer);
     this.createGuardRails(center, axis, width, depth, height);
+    this.createConveyorSupports(center, axis, width);
     this.conveyers.push({ mesh: conveyer, axis, center, start, end })
 
     const stripesGeometry = new THREE.BoxGeometry(.12, 0.02, depth);
@@ -323,6 +425,7 @@ export class WarehouseScene {
 
     this.createCurvedConnector(centerX, centerZ, y, radius, direction);
   }
+
   private createLongConveyor(
     startX: number,
     endX: number,
@@ -346,6 +449,7 @@ export class WarehouseScene {
 
     this.scene.add(conveyor);
     this.createGuardRails(center, 'x', width, depth, height);
+    this.createConveyorSupports(center, 'x', width);
     this.masterConveyer = {
       mesh: conveyor,
       axis: 'x',
@@ -355,27 +459,191 @@ export class WarehouseScene {
     };
   }
   private addSwitches(): void {
-    const switchWidth = 1.6;
-    const switchHeight = 0.18;
-    const switchDepth = 0.35;
-
-    const Armgeometry = new THREE.BoxGeometry(
-      switchWidth,
-      switchHeight,
-      switchDepth
+    const sorted = [...this.conveyers].sort(
+      (a, b) => a.center.x - b.center.x
     );
-    const material = new THREE.MeshStandardMaterial({
-      color: 0xff0000,
-    });
 
-    for (const conveyer of this.conveyers) {
-      const switchArm = new THREE.Mesh(Armgeometry, material);
-      const switchPos = conveyer.end.x
+    for (let i = 0; i < sorted.length - 1; i += 2) {
+      const c1 = sorted[i];
+      const c2 = sorted[i + 1];
+      const radius = Math.abs(c2.center.x - c1.center.x) / 2;
+      const arcCenterX = (c1.center.x + c2.center.x) / 2;
+      const arcCenterZ = c1.start.z;
+      const switchX = arcCenterX;
+      const switchZ = arcCenterZ - radius;
+      const switchY = c1.center.y + this.conveyorHeight / 2 + 0.08;
+      const bladeGeometry = new THREE.BoxGeometry(1.6, 0.12, 0.28);
+      const bladeMaterial = new THREE.MeshStandardMaterial({
+        color: 0xe9eef2,
+        metalness: 0.55,
+        roughness: 0.24,
+      });
+      const blade = new THREE.Mesh(bladeGeometry, bladeMaterial);
 
-      switchArm.position.set(switchPos, conveyer.start.y + 0.1, (this.masterConveyer?.start.z) ? this.masterConveyer.start.z - .5 : 0)
-      this.scene.add(switchArm)
+      blade.position.set(switchX, switchY, switchZ);
+      blade.rotation.y = 0;
+      this.scene.add(blade)
     }
   }
+
+  private createConntectorLane(): void {
+    const sorted = [...this.conveyers].sort(
+      (a, b) => a.center.x - b.center.x
+    );
+
+    for(let i = 0; i < this.conveyers.length; i+=2){
+      const c1 = sorted[i];
+      const c2 = sorted[i + 1];
+
+      const distance = Math.abs(c2.center.x - c1.center.x);
+      const radius = distance / 2;
+      const arcCenterX = (c1.center.x + c2.center.x) / 2;
+      const arcCenterZ = c1.start.z;
+      const angleStart = -Math.PI;
+      const angleEnd = 0;
+      const lowestZAngle = -Math.PI / 2;
+      const minimumOpening = 1;
+      const openingAngle = minimumOpening / (2 * radius);
+
+    this.createSmoothArcStrip(
+      arcCenterX,
+      arcCenterZ,
+      c1.center.y,
+        radius,
+        this.conveyorDepth,
+        this.conveyorHeight,
+        angleStart,
+        angleEnd,
+      0x222222
+    );
+    this.createArcSupports(arcCenterX, arcCenterZ, c1.center.y, radius, angleStart, angleEnd);
+
+    for (const side of [-1, 1]) {
+        const wallRadius = radius + side * (this.conveyorDepth / 2 - this.railThickness / 2);
+
+        this.createConnectorWallArc(
+          arcCenterX,
+          arcCenterZ,
+          c1.center.y,
+          wallRadius,
+          angleStart,
+          lowestZAngle - openingAngle
+        );
+        this.createConnectorWallArc(
+          arcCenterX,
+          arcCenterZ,
+          c1.center.y,
+          wallRadius,
+          lowestZAngle + openingAngle,
+          angleEnd
+        );
+    }
+
+    }
+  }
+
+  private createSmoothArcStrip(
+    centerX: number,
+    centerZ: number,
+    y: number,
+    radius: number,
+    width: number,
+    height: number,
+    angleStart: number,
+    angleEnd: number,
+    color: number
+  ): void {
+    const innerRadius = Math.max(radius - width / 2, 0.01);
+    const outerRadius = radius + width / 2;
+    const shape = new THREE.Shape();
+    const material = new THREE.MeshStandardMaterial({ color });
+
+    shape.moveTo(Math.cos(angleStart) * outerRadius, Math.sin(angleStart) * outerRadius);
+    shape.absarc(0, 0, outerRadius, angleStart, angleEnd, false);
+    shape.lineTo(Math.cos(angleEnd) * innerRadius, Math.sin(angleEnd) * innerRadius);
+    shape.absarc(0, 0, innerRadius, angleEnd, angleStart, true);
+    shape.closePath();
+
+    const geometry = new THREE.ExtrudeGeometry(shape, {
+      depth: height,
+      bevelEnabled: false,
+      curveSegments: 64,
+      steps: 1,
+    });
+
+    geometry.rotateX(Math.PI / 2);
+    geometry.translate(centerX, y + height / 2, centerZ);
+
+    this.scene.add(new THREE.Mesh(geometry, material));
+  }
+
+  private createConnectorWallArc(
+    centerX: number,
+    centerZ: number,
+    y: number,
+    radius: number,
+    angleStart: number,
+    angleEnd: number
+  ): void {
+    if (angleEnd <= angleStart) return;
+
+    this.createSmoothArcStrip(
+      centerX,
+      centerZ,
+      y + this.conveyorHeight / 2,
+      radius,
+      this.railThickness,
+      this.railHeight,
+      angleStart,
+      angleEnd,
+      this.railColor
+    );
+  }
+
+  private createArcSupports(
+    centerX: number,
+    centerZ: number,
+    y: number,
+    radius: number,
+    angleStart: number,
+    angleEnd: number
+  ): void {
+    const frameMaterial = new THREE.MeshStandardMaterial({
+      color: 0x343b43,
+      metalness: 0.55,
+      roughness: 0.34,
+    });
+    const frameY = y - this.conveyorHeight / 2 - 0.08;
+    const legHeight = Math.max(frameY, 0.2);
+    const legY = legHeight / 2;
+    const supportAngles = [
+      angleStart + Math.PI / 6,
+      (angleStart + angleEnd) / 2,
+      angleEnd - Math.PI / 6,
+    ];
+
+    for (const angle of supportAngles) {
+      const x = centerX + Math.cos(angle) * radius;
+      const z = centerZ + Math.sin(angle) * radius;
+      const tangentAngle = angle + Math.PI / 2;
+      const cross = new THREE.Mesh(
+        new THREE.BoxGeometry(this.conveyorDepth, 0.12, 0.14),
+        frameMaterial
+      );
+      const leg = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, legHeight, 0.12),
+        frameMaterial
+      );
+
+      cross.position.set(x, frameY, z);
+      cross.rotation.y = -tangentAngle;
+      leg.position.set(x, legY, z);
+
+      this.scene.add(cross);
+      this.scene.add(leg);
+    }
+  }
+
   ngAfterViewInit(): void {
     console.log("here is the el", this.container.nativeElement);
     this.initContainer();
@@ -388,11 +656,8 @@ export class WarehouseScene {
     this.initFloor();
     this.initGrid();
     this.createAmountBins(-8, 8, 3, true, 'z');
-    this.createLongConveyor(this.conveyers[0].start.x + 1, this.conveyers[this.conveyers.length - 1].end.x + 1, -6)
-    if (this.masterConveyer) {
-      this.createConnectorAtLane(this.masterConveyer, this.conveyers[0])
-    }
     this.addSwitches()
+    this.createConntectorLane()
     this.animate();
   }
 
