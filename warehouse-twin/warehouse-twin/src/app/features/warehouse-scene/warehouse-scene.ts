@@ -37,6 +37,7 @@ export class WarehouseScene {
   private conveyorStripes: { mesh: THREE.Mesh, axis: 'x' | 'z', speed: number, start: number, end: number }[] = []
   private conveyers: ConveyerData[] = []
   private masterConveyer?: ConveyerData;
+  private bucketIndex = 0;
   private initCamera(): void {
     this.camera = new THREE.PerspectiveCamera(75, this.width / this.height, 0.1, 1000);
     this.camera.position.set(5, 5, 5);
@@ -100,6 +101,42 @@ export class WarehouseScene {
 
     shelf.position.set(x, 1.5, z);
     this.scene.add(shelf);
+  }
+
+  private createBucketLabel(text: string): THREE.Sprite {
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    const fontSize = 34;
+    const paddingX = 18;
+    const paddingY = 10;
+
+    if (!context) {
+      return new THREE.Sprite();
+    }
+
+    context.font = `700 ${fontSize}px system-ui, sans-serif`;
+    const textWidth = context.measureText(text).width;
+    canvas.width = Math.ceil(textWidth + paddingX * 2);
+    canvas.height = fontSize + paddingY * 2;
+
+    context.font = `700 ${fontSize}px system-ui, sans-serif`;
+    context.textBaseline = 'middle';
+    context.fillStyle = 'rgba(15, 23, 42, 0.88)';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = '#e5f3ff';
+    context.fillText(text, paddingX, canvas.height / 2);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const label = new THREE.Sprite(material);
+
+    label.scale.set(canvas.width / 95, canvas.height / 95, 1);
+    label.renderOrder = 20;
+    return label;
   }
 
   private createBin(x: number, z: number): THREE.Group {
@@ -184,6 +221,12 @@ export class WarehouseScene {
     const bin = new THREE.Group();
     bin.add(bottom, back, leftwall, right, front, rim, accent, feet);
     this.scene.add(bin);
+
+    const label = this.createBucketLabel(`Bucket ${this.bucketIndex + 1}`);
+    label.position.set(x, height + 0.65, z);
+    this.scene.add(label);
+    this.bucketIndex += 1;
+
     return bin;
   }
 
